@@ -1,20 +1,19 @@
 package workload
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"sync"
 
 	"github.com/gofrs/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/julienschmidt/httprouter"
-	httputil "github.com/micaroni/risk-weaver/internal/httputil"
-)
-
-var (
-	workloadServiceSyncOnce sync.Once
-	workloadServiceObj      *workloadService
+	"github.com/micaroni/risk-weaver/internal/utils"
 )
 
 type Workload struct {
@@ -25,22 +24,102 @@ type Workload struct {
 	Owner       string    `json:"owner"`
 }
 
-var WLRequest Workload
-
 type WorkloadService interface {
 	AddNewWorkload() httprouter.Handle
+	RetrieveWorkload() httprouter.Handle
 }
 
 type workloadService struct {
-	Workload
+	repository *WorkloadRepository
 }
 
-func InitWorkloadService(workload Workload) WorkloadService {
-	workloadServiceSyncOnce.Do(func() {
-		workloadServiceObj = &workloadService{Workload: workload}
-	})
+type WorkloadRepository struct {
+	db *pgxpool.Pool
+}
 
-	return workloadServiceObj
+func NewWorkloadRepository(db *pgxpool.Pool) *WorkloadRepository {
+	if db == nil {
+		panic("database pool cannot be nil")
+	}
+
+	return &WorkloadRepository{
+		db: db,
+	}
+}
+
+func NewWorkloadService(repository *WorkloadRepository) WorkloadService {
+	if repository == nil {
+		panic("workload repository cannot be nil")
+	}
+
+	return &workloadService{
+		repository: repository,
+	}
+}
+
+func (wlr *WorkloadRepository) CreateWorkload(ctx context.Context, wL Workload) error {
+	const query = `
+		INSERT INTO workloads (
+			id,
+			name,
+			namespace,
+			environment,
+			owner
+		)
+		VALUES ($1, $2, $3, $4, $5)
+	`
+	commandTag, err := wlr.db.Exec(
+		ctx,
+		query,
+		wL.ID,
+		wL.Name,
+		wL.Namespace,
+		wL.Environment,
+		wL.Owner,
+	)
+	if err != nil {
+		return fmt.Errorf("insert workload: %w", err)
+	}
+	if commandTag.RowsAffected() != 1 {
+		return fmt.Errorf("expected one workload to be inserted")
+	}
+
+	return nil
+}
+
+func (wlr *WorkloadRepository) GetWorkloadByID(ctx context.Context, id uuid.UUID) (Workload, error) {
+	const query = `
+		SELECT
+			id,
+			name,
+			namespace,
+			environment,
+			owner
+		FROM workloads
+		WHERE id = $1
+	`
+	var workload Workload
+
+	err := wlr.db.QueryRow(
+		ctx,
+		query,
+		id,
+	).Scan(
+		&workload.ID,
+		&workload.Name,
+		&workload.Namespace,
+		&workload.Environment,
+		&workload.Owner,
+	)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Workload{}, fmt.Errorf("workload not found: %w", err)
+	}
+	if err != nil {
+		return Workload{}, fmt.Errorf("get workload by ID: %w", err)
+	}
+
+	return workload, nil
 }
 
 func (ws *workloadService) AddNewWorkload() httprouter.Handle {
@@ -53,10 +132,12 @@ func (ws *workloadService) AddNewWorkload() httprouter.Handle {
 		defer func() {
 			if rec := recover(); rec != nil {
 				log.Printf("panic in AddNewWorkload: %v", rec)
+
 				apiStatusCode = http.StatusInternalServerError
-				apiRespBody = httputil.GetHTTPErrMessageJSONBytes(apiStatusCode, "internal server error")
+				apiRespBody = utils.GetHTTPErrMessageJSONBytes(apiStatusCode, "internal server error")
 			}
 
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(apiStatusCode)
 			if _, err := w.Write(apiRespBody); err != nil {
 				log.Printf("failed to write response: %v", err)
@@ -73,10 +154,10 @@ func (ws *workloadService) AddNewWorkload() httprouter.Handle {
 			var maxBytesErr *http.MaxBytesError
 			if errors.As(err, &maxBytesErr) {
 				apiStatusCode = http.StatusRequestEntityTooLarge
-				apiRespBody = httputil.GetHTTPErrMessageJSONBytes(apiStatusCode, "request body too large")
+				apiRespBody = utils.GetHTTPErrMessageJSONBytes(apiStatusCode, "request body too large")
 			} else {
 				apiStatusCode = http.StatusInternalServerError
-				apiRespBody = httputil.GetHTTPErrMessageJSONBytes(apiStatusCode, "failed to read request body")
+				apiRespBody = utils.GetHTTPErrMessageJSONBytes(apiStatusCode, "failed to read request body")
 			}
 			return
 		}
@@ -84,16 +165,18 @@ func (ws *workloadService) AddNewWorkload() httprouter.Handle {
 		if len(reqBody) == 0 {
 			log.Printf("received empty request body")
 			apiStatusCode = http.StatusBadRequest
-			apiRespBody = httputil.GetHTTPErrMessageJSONBytes(apiStatusCode, "empty request body")
+			apiRespBody = utils.GetHTTPErrMessageJSONBytes(apiStatusCode, "empty request body")
 			return
 		}
 
 		var newWorkload Workload
-		err = httputil.UnmarshalJSON(reqBody, &newWorkload)
-		if err != nil {
-			log.Printf("error unmarshalling request")
+		if err := json.Unmarshal(reqBody, &newWorkload); err != nil {
+			log.Printf("error unmarshalling request: %v", err)
 			apiStatusCode = http.StatusBadRequest
-			apiRespBody = httputil.GetHTTPErrMessageJSONBytes(apiStatusCode, "error unmarshalling request")
+			apiRespBody = utils.GetHTTPErrMessageJSONBytes(
+				apiStatusCode,
+				"error unmarshalling request",
+			)
 			return
 		}
 
@@ -101,12 +184,81 @@ func (ws *workloadService) AddNewWorkload() httprouter.Handle {
 		if newWorkload.ID == uuid.Nil {
 			log.Printf("error returning workload ID")
 			apiStatusCode = http.StatusInternalServerError
-			apiRespBody = httputil.GetHTTPErrMessageJSONBytes(apiStatusCode, "error returning workload ID")
+			apiRespBody = utils.GetHTTPErrMessageJSONBytes(apiStatusCode, "failed to generate workload ID")
 			return
-		} else {
-			stringUUID := newWorkload.ID.String()
-			apiRespBody = httputil.GetHTTPErrMessageJSONBytes(apiStatusCode, "Workload ID: "+stringUUID)
 		}
+
+		if err := ws.repository.CreateWorkload(r.Context(), newWorkload); err != nil {
+			log.Printf("failed to create workload: %v", err)
+			apiStatusCode = http.StatusInternalServerError
+			apiRespBody = utils.GetHTTPErrMessageJSONBytes(apiStatusCode, "failed to create workload")
+
+			return
+		}
+
+		apiStatusCode = http.StatusCreated
+		apiRespBody = utils.GetHTTPErrMessageJSONBytes(apiStatusCode, "workload created with ID: "+newWorkload.ID.String())
+	}
+}
+
+func (ws *workloadService) RetrieveWorkload() httprouter.Handle {
+	return func(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+		log.Printf("retrieving workload")
+
+		apiStatusCode := http.StatusOK
+		apiRespBody := []byte{}
+
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("panic in RetrieveWorkload: %v", rec)
+
+				apiStatusCode = http.StatusInternalServerError
+				apiRespBody = utils.GetHTTPErrMessageJSONBytes(apiStatusCode, "internal server error")
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(apiStatusCode)
+			if _, err := w.Write(apiRespBody); err != nil {
+				log.Printf("failed to write response: %v", err)
+			}
+			log.Printf("finished api call")
+		}()
+
+		idString := p.ByName("id")
+
+		workloadID, err := uuid.FromString(idString)
+		if err != nil {
+			apiStatusCode = http.StatusBadRequest
+			apiRespBody = utils.GetHTTPErrMessageJSONBytes(apiStatusCode, "invalid workload ID")
+			return
+		}
+
+		retrievedWorkload, err := ws.repository.GetWorkloadByID(r.Context(), workloadID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			apiStatusCode = http.StatusNotFound
+			apiRespBody = utils.GetHTTPErrMessageJSONBytes(apiStatusCode, "workload not found")
+
+			return
+		}
+
+		if err != nil {
+			log.Printf("failed to get workload by ID: %v", err)
+			apiStatusCode = http.StatusInternalServerError
+			apiRespBody = utils.GetHTTPErrMessageJSONBytes(apiStatusCode, "failed to retreive workload")
+
+			return
+		}
+
+		apiRespBody, err = json.Marshal(retrievedWorkload)
+		if err != nil {
+			log.Printf("failed to marshal workload response: %v", err)
+			apiStatusCode = http.StatusInternalServerError
+			apiRespBody = utils.GetHTTPErrMessageJSONBytes(apiStatusCode, "failed to marshal workload response")
+
+			return
+		}
+
+		apiStatusCode = http.StatusOK
 	}
 }
 
@@ -115,12 +267,5 @@ func generateUUID() uuid.UUID {
 	if err != nil {
 		return uuid.Nil
 	}
-
-	addUUIDtoWorkload(id)
-
 	return id
-}
-
-func addUUIDtoWorkload(uuid uuid.UUID) error {
-	return nil
 }

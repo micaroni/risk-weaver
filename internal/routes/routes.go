@@ -35,4 +35,5 @@ func initRoutes(ws workload.WorkloadService) *httprouter.Router {
 
 func initWorkloadRoutes(mux *httprouter.Router, ws workload.WorkloadService) {
 	mux.POST(RouteWorkload, ws.AddNewWorkload())
+	mux.GET(RouteWorkload, ws.RetrieveWorkload())
 }
