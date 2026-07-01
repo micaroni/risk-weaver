@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 
@@ -123,7 +122,7 @@ func (wlr *WorkloadRepository) GetWorkloadByID(ctx context.Context, id uuid.UUID
 }
 
 func (ws *workloadService) AddNewWorkload() httprouter.Handle {
-	return func(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	return func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		log.Printf("received new workload")
 
 		apiStatusCode := http.StatusOK
@@ -148,34 +147,15 @@ func (ws *workloadService) AddNewWorkload() httprouter.Handle {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		defer r.Body.Close()
 
-		reqBody, err := io.ReadAll(r.Body)
-		if err != nil {
-			log.Printf("failed to read request body: %v", err)
-			var maxBytesErr *http.MaxBytesError
-			if errors.As(err, &maxBytesErr) {
-				apiStatusCode = http.StatusRequestEntityTooLarge
-				apiRespBody = utils.GetHTTPErrMessageJSONBytes(apiStatusCode, "request body too large")
-			} else {
-				apiStatusCode = http.StatusInternalServerError
-				apiRespBody = utils.GetHTTPErrMessageJSONBytes(apiStatusCode, "failed to read request body")
-			}
-			return
-		}
-
-		if len(reqBody) == 0 {
-			log.Printf("received empty request body")
-			apiStatusCode = http.StatusBadRequest
-			apiRespBody = utils.GetHTTPErrMessageJSONBytes(apiStatusCode, "empty request body")
-			return
-		}
-
 		var newWorkload Workload
-		if err := json.Unmarshal(reqBody, &newWorkload); err != nil {
-			log.Printf("error unmarshalling request: %v", err)
-			apiStatusCode = http.StatusBadRequest
+
+		if err := json.NewDecoder(r.Body).Decode(&newWorkload); err != nil {
+			log.Printf("failed to decode validated workload request: %v", err)
+
+			apiStatusCode = http.StatusInternalServerError
 			apiRespBody = utils.GetHTTPErrMessageJSONBytes(
 				apiStatusCode,
-				"error unmarshalling request",
+				"failed to process workload request",
 			)
 			return
 		}

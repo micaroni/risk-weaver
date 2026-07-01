@@ -14,7 +14,8 @@ var (
 )
 
 const (
-	RouteWorkload = "/workloads"
+	RouteNewWorkload = "/workloads"
+	RouteGetWorkload = "/workloads/:id"
 )
 
 func InitRoutes(ws workload.WorkloadService) http.Handler {
@@ -34,6 +35,6 @@ func initRoutes(ws workload.WorkloadService) *httprouter.Router {
 }
 
 func initWorkloadRoutes(mux *httprouter.Router, ws workload.WorkloadService) {
-	mux.POST(RouteWorkload, ws.AddNewWorkload())
-	mux.GET(RouteWorkload, ws.RetrieveWorkload())
+	mux.POST(RouteNewWorkload, ChainNewWorkloadMiddlewares(ws.AddNewWorkload()))
+	mux.GET(RouteGetWorkload, ws.RetrieveWorkload())
 }

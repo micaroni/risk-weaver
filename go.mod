@@ -9,7 +9,6 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/joho/godotenv v1.5.1
 	github.com/pressly/goose/v3 v3.27.1
-	github.com/samber/lo v1.53.0
 )
 
 require (
