@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/julienschmidt/httprouter"
 	"github.com/micaroni/risk-weaver/internal/utils"
@@ -26,10 +28,10 @@ type ValidationError struct {
 
 type Middleware func(httprouter.Handle) httprouter.Handle
 
-func writeJSONError(w http.ResponseWriter, statusCode int, message string) {
+func WriteJSONError(w http.ResponseWriter, statusCode int, message string) {
 	responseBody := utils.GetHTTPErrMessageJSONBytes(statusCode, message)
 
-	w.Header().Set("Content-Type", "appliation/json")
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 
 	if _, err := w.Write(responseBody); err != nil {
@@ -37,7 +39,22 @@ func writeJSONError(w http.ResponseWriter, statusCode int, message string) {
 	}
 }
 
-func validateNewWorkload(next httprouter.Handle) httprouter.Handle {
+func ContentTypeMiddleware(next httprouter.Handle) httprouter.Handle {
+	return func(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+		log.Println(r.URL.Path, "validating Content-Type")
+
+		contentType := r.Header.Get("Content-Type")
+
+		if contentType != "application/json" && !strings.HasPrefix(contentType, "application/json") {
+			http.Error(w, "Invalid Content-Type: application/json expected", http.StatusUnsupportedMediaType)
+			return
+		}
+
+		next(w, r, p)
+	}
+}
+
+func ValidateNewWorkload(next httprouter.Handle) httprouter.Handle {
 	return func(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 		log.Println(r.URL.Path, "validating workload request")
 
@@ -50,15 +67,15 @@ func validateNewWorkload(next httprouter.Handle) httprouter.Handle {
 
 			var maxBytesErr *http.MaxBytesError
 			if errors.As(err, &maxBytesErr) {
-				writeJSONError(w, http.StatusRequestEntityTooLarge, "request body too large")
+				WriteJSONError(w, http.StatusRequestEntityTooLarge, "request body too large")
 			} else {
-				writeJSONError(w, http.StatusInternalServerError, "failed to read request body")
+				WriteJSONError(w, http.StatusInternalServerError, "failed to read request body")
 			}
 			return
 		}
 
 		if len(reqBody) == 0 {
-			writeJSONError(w, http.StatusBadRequest, "empty request body")
+			WriteJSONError(w, http.StatusBadRequest, "empty request body")
 			return
 		}
 
@@ -66,25 +83,31 @@ func validateNewWorkload(next httprouter.Handle) httprouter.Handle {
 		if err := json.Unmarshal(reqBody, &request); err != nil {
 			log.Printf("error unmarshalling request: %v", err)
 
-			writeJSONError(w, http.StatusBadRequest, "invalid JSON request")
+			var typeErr *json.UnmarshalTypeError
+			if errors.As(err, &typeErr) {
+				WriteJSONError(w, http.StatusBadRequest, fmt.Sprintf("%s must be a %s", typeErr.Field, typeErr.Type))
+				return
+			}
+
+			WriteJSONError(w, http.StatusBadRequest, "invalid JSON request")
 			return
 		}
 
 		switch {
 		case request.Name == "":
-			writeJSONError(w, http.StatusBadRequest, "name is required")
+			WriteJSONError(w, http.StatusBadRequest, "name is required")
 			return
 
 		case request.Namespace == "":
-			writeJSONError(w, http.StatusBadRequest, "namespace is required")
+			WriteJSONError(w, http.StatusBadRequest, "namespace is required")
 			return
 
 		case request.Environment == "":
-			writeJSONError(w, http.StatusBadRequest, "environment is required")
+			WriteJSONError(w, http.StatusBadRequest, "environment is required")
 			return
 
 		case request.Owner == "":
-			writeJSONError(w, http.StatusBadRequest, "owner is required")
+			WriteJSONError(w, http.StatusBadRequest, "owner is required")
 			return
 		}
 
@@ -96,24 +119,9 @@ func validateNewWorkload(next httprouter.Handle) httprouter.Handle {
 	}
 }
 
-func contentTypeMiddleware(next httprouter.Handle) httprouter.Handle {
-	return func(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
-		log.Println(r.URL.Path, "validating Content-Type")
-
-		contentType := r.Header.Get("Content-Type")
-
-		if contentType != "application/json" {
-			http.Error(w, "Invalid Content-Type: application/json expected", http.StatusUnsupportedMediaType)
-			return
-		}
-
-		next(w, r, p)
-	}
-}
-
 func ChainNewWorkloadMiddlewares(handler httprouter.Handle) httprouter.Handle {
-	handler = validateNewWorkload(handler)
-	handler = contentTypeMiddleware(handler)
+	handler = ValidateNewWorkload(handler)
+	handler = ContentTypeMiddleware(handler)
 
 	return handler
 }

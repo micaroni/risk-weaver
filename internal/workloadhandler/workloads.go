@@ -28,8 +28,20 @@ type WorkloadService interface {
 	RetrieveWorkload() httprouter.Handle
 }
 
+type Repository interface {
+	CreateWorkload(
+		ctx context.Context,
+		workload Workload,
+	) error
+
+	GetWorkloadByID(
+		ctx context.Context,
+		id uuid.UUID,
+	) (Workload, error)
+}
+
 type workloadService struct {
-	repository *WorkloadRepository
+	repository Repository
 }
 
 type WorkloadRepository struct {
@@ -46,7 +58,7 @@ func NewWorkloadRepository(db *pgxpool.Pool) *WorkloadRepository {
 	}
 }
 
-func NewWorkloadService(repository *WorkloadRepository) WorkloadService {
+func NewWorkloadService(repository Repository) WorkloadService {
 	if repository == nil {
 		panic("workload repository cannot be nil")
 	}
@@ -143,8 +155,6 @@ func (ws *workloadService) AddNewWorkload() httprouter.Handle {
 			}
 			log.Printf("finished api call")
 		}()
-
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		defer r.Body.Close()
 
 		var newWorkload Workload
@@ -153,10 +163,7 @@ func (ws *workloadService) AddNewWorkload() httprouter.Handle {
 			log.Printf("failed to decode validated workload request: %v", err)
 
 			apiStatusCode = http.StatusInternalServerError
-			apiRespBody = utils.GetHTTPErrMessageJSONBytes(
-				apiStatusCode,
-				"failed to process workload request",
-			)
+			apiRespBody = utils.GetHTTPErrMessageJSONBytes(apiStatusCode, "failed to process workload request")
 			return
 		}
 

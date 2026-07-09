@@ -8,6 +8,7 @@ require (
 	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/joho/godotenv v1.5.1
+	github.com/pashagolub/pgxmock/v5 v5.1.0
 	github.com/pressly/goose/v3 v3.27.1
 )
 
