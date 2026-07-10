@@ -29,15 +29,8 @@ type WorkloadService interface {
 }
 
 type Repository interface {
-	CreateWorkload(
-		ctx context.Context,
-		workload Workload,
-	) error
-
-	GetWorkloadByID(
-		ctx context.Context,
-		id uuid.UUID,
-	) (Workload, error)
+	CreateWorkload(ctx context.Context, workload Workload) error
+	GetWorkloadByID(ctx context.Context, id uuid.UUID) (Workload, error)
 }
 
 type workloadService struct {
@@ -231,7 +224,7 @@ func (ws *workloadService) RetrieveWorkload() httprouter.Handle {
 		if err != nil {
 			log.Printf("failed to get workload by ID: %v", err)
 			apiStatusCode = http.StatusInternalServerError
-			apiRespBody = utils.GetHTTPErrMessageJSONBytes(apiStatusCode, "failed to retreive workload")
+			apiRespBody = utils.GetHTTPErrMessageJSONBytes(apiStatusCode, "failed to retrieve workload")
 
 			return
 		}
